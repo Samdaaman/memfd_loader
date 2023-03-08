@@ -6,7 +6,8 @@ from icecream import ic
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad
-
+from nacl.public import Box, PublicKey, PrivateKey
+from nacl.bindings.crypto_box import crypto_box_ZEROBYTES, crypto_box_BOXZEROBYTES
 
 with open('../test/main', 'rb') as fh:
     main_bin = fh.read()
@@ -90,16 +91,30 @@ class RequestHandler(BaseRequestHandler):
                 main_bin_encrypt, # Send encrypted binary
             ]))
 
-        elif True:
+        elif False:
             self.send(b''.join([
                 struct.pack('<I', len(main_bin)),
                 main_bin,
             ]))
+
         else:
-            pass
+            sk_bob = PrivateKey.generate()
+            pk_bob = sk_bob.public_key
+            pk_alice = PublicKey(self.recv_count(PublicKey.SIZE))
+            box = Box(sk_bob, pk_alice)
+            encypt_result = box.encrypt(main_bin) # main_bin_enc starts with the nonce (24 bytes)
+            nonce = encypt_result[:Box.NONCE_SIZE]
+            main_bin_enc = encypt_result[Box.NONCE_SIZE:]
+
+            self.send(b''.join([
+                pk_bob.encode(), # 32
+                nonce,
+                struct.pack('<I', len(main_bin_enc)), # 4
+                main_bin_enc, # +32-16
+            ]))
 
         self.recv_until_close()
-        print('Sent :)')
+        print('Sent :)\n\n\n')
 
 
 def main():
