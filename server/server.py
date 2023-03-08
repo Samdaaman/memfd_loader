@@ -60,34 +60,44 @@ class RequestHandler(BaseRequestHandler):
     def handle(self):
         print('Sending...')
 
-        # Recieve the public key from the client
-        pubkey_len_buf = self.recv_count(4)
-        if pubkey_len_buf is None:
-            raise Exception('getting n_len_buf failed')
-        pubkey_len = struct.unpack('<I', pubkey_len_buf)[0]
-        pubkey_buf = self.recv_count(pubkey_len)
-        if pubkey_buf is None:
-            raise Exception('getting n_buf failed')
-        pubkey = RSA.import_key(pubkey_buf)
+        if False:
+            # Recieve the public key from the client
+            pubkey_len_buf = self.recv_count(4)
+            if pubkey_len_buf is None:
+                raise Exception('getting n_len_buf failed')
+            pubkey_len = struct.unpack('<I', pubkey_len_buf)[0]
+            pubkey_buf = self.recv_count(pubkey_len)
+            if pubkey_buf is None:
+                raise Exception('getting n_buf failed')
+            pubkey = RSA.import_key(pubkey_buf)
 
-        # Encrypt the main binary with AES
-        aes_key = os.urandom(32)
-        aes_iv = os.urandom(16)
-        aes = AES.new(aes_key, AES.MODE_CBC, aes_iv)
-        main_bin_encrypt = aes.encrypt(pad(main_bin, 16))
-        ic(len(main_bin))
-        ic(len(main_bin_encrypt))
+            # Encrypt the main binary with AES
+            aes_key = os.urandom(32)
+            aes_iv = os.urandom(16)
+            aes = AES.new(aes_key, AES.MODE_CBC, aes_iv)
+            main_bin_encrypt = aes.encrypt(pad(main_bin, 16))
+            ic(len(main_bin))
+            ic(len(main_bin_encrypt))
 
-        # Encrypt and send the AES key with the server's public key (send the iv in plain)
-        rsa = PKCS1_OAEP.new(pubkey)
-        aes_key_enc = rsa.encrypt(aes_key)
-        self.send(b''.join([
-            struct.pack('<I', len(aes_key_enc)),
-            aes_key_enc,
-            aes_iv,
-            struct.pack('<I', len(main_bin_encrypt)),
-            main_bin_encrypt, # Send encrypted binary
-        ]))
+            # Encrypt and send the AES key with the server's public key (send the iv in plain)
+            rsa = PKCS1_OAEP.new(pubkey)
+            aes_key_enc = rsa.encrypt(aes_key)
+            self.send(b''.join([
+                struct.pack('<I', len(aes_key_enc)),
+                aes_key_enc,
+                aes_iv,
+                struct.pack('<I', len(main_bin_encrypt)),
+                main_bin_encrypt, # Send encrypted binary
+            ]))
+
+        elif True:
+            self.send(b''.join([
+                struct.pack('<I', len(main_bin)),
+                main_bin,
+            ]))
+        else:
+            pass
+
         self.recv_until_close()
         print('Sent :)')
 
