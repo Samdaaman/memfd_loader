@@ -13,13 +13,13 @@ Proof of concept reflective (in-memory) loader with encryption. Supports loading
 
 ## TCP Loader
 Sends encrypted binary over TCP, decrypts and executes in memory.
-- Compile tcp loader (see below)
+- Compile tcp loader & test binary (see below)
 - Start server `python3 server.py`
 - Run compiled loader `./main`
 
 ## Stdio Loader
 Sends encrypted binary to a subprocess, decrypts and executes in memory.
-- Compile stdio loader (see below)
+- Compile stdio loader & test binary (see below)
 - Start stager `python3 stager.py`
 
 
