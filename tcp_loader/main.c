@@ -36,7 +36,7 @@ static int s_write(int s, uint8_t *buf, size_t buf_len)
     ssize_t write_result = write(s, buf, buf_len); // TODO implement if write_result > 0 but less than len, but should be fine for now
     if (write_result != buf_len)
     {
-        D(printf("[line %i] write() failed: %li != %lu\n", __LINE__, write_result, buf_len));
+        D(fprintf(stderr, "[line %i] write() failed: %li != %lu\n", __LINE__, write_result, buf_len));
     }
     return write_result;
 }
@@ -57,7 +57,7 @@ static int s_write_with_len(int s, uint8_t *buf, size_t buf_len)
 
 static int s_read_with_len_allocated(int s, ssize_t len, uint8_t *buf)
 {
-    D(printf("s_read_with_len_allocated() %li\n", len));
+    D(fprintf(stderr, "s_read_with_len_allocated() %li\n", len));
 
     ssize_t num_read = 0;
     while (num_read < len)
@@ -72,7 +72,7 @@ static int s_read_with_len_allocated(int s, ssize_t len, uint8_t *buf)
 
     if (num_read != len)
     {
-        D(printf("[line %i] read() failed: %li != %lu\n", __LINE__, num_read, len));
+        D(fprintf(stderr, "[line %i] read() failed: %li != %lu\n", __LINE__, num_read, len));
     }
     return num_read;
 }
@@ -96,11 +96,11 @@ static uint8_t* s_read_unknown_len(int s, ssize_t *num_read_on_success)
     ssize_t read_result = read(s, &len, sizeof(len));
     if (read_result != sizeof(len))
     {
-        D(printf("read read_size failed\n"));
+        D(fprintf(stderr, "read read_size failed\n"));
         return NULL;
     }
 
-    D(printf("num_read: %u\n", len));
+    D(fprintf(stderr, "num_read: %u\n", len));
     uint8_t *ret = s_read_with_len(s, len);
     if (ret != NULL && num_read_on_success != NULL)
     {
@@ -131,7 +131,7 @@ static int download(int fd)
     int connect_result = connect(s, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if (connect_result != 0)
     {
-        D(printf("failed to connect\n"));
+        D(fprintf(stderr, "failed to connect\n"));
         close(s);
         return 1;
     }
@@ -161,7 +161,7 @@ static int download(int fd)
     uint32_t ct_buf_len_trimmed = ct_buf_len - crypto_box_BOXZEROBYTES; // PyNACL trims the first crypto_box_BOXZEROBYTES bytes
     if (s_read_with_len_allocated(s, ct_buf_len_trimmed, ct_buf + crypto_box_BOXZEROBYTES) != ct_buf_len_trimmed)
     {
-        D(printf("Error reading ct_buf\n"));
+        D(fprintf(stderr, "Error reading ct_buf\n"));
         goto fail;
     }
 
@@ -172,7 +172,7 @@ static int download(int fd)
     uint8_t *pt_buf = malloc(ct_buf_len);
     if (crypto_box_open(pt_buf, ct_buf, ct_buf_len, nonce_buf, pk_bob, sk_alice) != 0)
     {
-        D(printf("Error decrypting (crypto_box_open)\n"));
+        D(fprintf(stderr, "Error decrypting (crypto_box_open)\n"));
         goto fail;
     }
 
@@ -182,7 +182,7 @@ static int download(int fd)
     ssize_t write_result = write(fd, binary_buf, binary_buf_len);
     if (write_result != binary_buf_len)
     {
-        D(printf("[line %i] write() failed: %li != %u\n", __LINE__, write_result, binary_buf_len));
+        D(fprintf(stderr, "[line %i] write() failed: %li != %u\n", __LINE__, write_result, binary_buf_len));
         return 1;
     }
 
